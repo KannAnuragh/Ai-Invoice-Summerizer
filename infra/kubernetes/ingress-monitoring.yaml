@@ -1,0 +1,125 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: invoice-summarizer-ingress
+  namespace: invoice-summarizer
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.invoicesummarizer.com
+    secretName: invoice-summarizer-tls
+  rules:
+  - host: api.invoicesummarizer.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 80
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: invoice-summarizer
+  namespace: invoice-summarizer
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+
+---
+apiVersion: v1
+kind: PrometheusRule
+metadata:
+  name: invoice-summarizer-alerts
+  namespace: invoice-summarizer
+spec:
+  groups:
+  - name: invoice-summarizer
+    interval: 30s
+    rules:
+    - alert: APIGatewayDown
+      expr: up{job="invoice-summarizer"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "API Gateway is down"
+        description: "API Gateway has been down for 5 minutes"
+    
+    - alert: HighErrorRate
+      expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate detected"
+        description: "Error rate is above 5%"
+    
+    - alert: HighLatency
+      expr: histogram_quantile(0.95, http_request_duration_seconds) > 1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High API latency"
+        description: "p95 latency is above 1 second"
+    
+    - alert: DatabaseConnectionPool
+      expr: database_connections_used / database_connections_max > 0.8
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Database connection pool near limit"
+        description: "Using over 80% of connection pool"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-gateway
+  namespace: invoice-summarizer
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-gateway
+  namespace: invoice-summarizer
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-gateway
+  namespace: invoice-summarizer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-gateway
+subjects:
+- kind: ServiceAccount
+  name: api-gateway
+  namespace: invoice-summarizer

@@ -1,0 +1,250 @@
+name: Build and Deploy AI Invoice Summarizer
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  quality-checks:
+    name: Code Quality and Testing
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r backend/requirements.txt
+        pip install pytest pytest-asyncio pytest-cov black ruff mypy
+    
+    - name: Format check with Black
+      run: black --check backend/
+    
+    - name: Lint with Ruff
+      run: ruff check backend/
+    
+    - name: Type check with mypy
+      run: mypy backend/ --ignore-missing-imports
+    
+    - name: Run tests
+      run: |
+        cd backend
+        pytest tests/ -v --cov=. --cov-report=xml
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./backend/coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  build:
+    name: Build Docker Images
+    needs: quality-checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - ingestion-service
+          - document-service
+          - ocr-service
+          - extraction-service
+          - summarization-service
+          - workflow-service
+          - audit-service
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+    
+    - name: Build and push
+      uses: docker/build-push-action@v4
+      with:
+        context: ./backend/${{ matrix.service }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Configure kubectl
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+    
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl set image deployment/api-gateway \
+          api-gateway=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api-gateway:sha-${{ github.sha }} \
+          -n invoice-summarizer || true
+        
+        kubectl rollout status deployment/api-gateway -n invoice-summarizer --timeout=5m
+    
+    - name: Run smoke tests
+      run: |
+        kubectl run smoke-tests \
+          --image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api-gateway:sha-${{ github.sha }} \
+          --restart=Never \
+          --rm \
+          -i \
+          -- pytest tests/smoke/
+    
+    - name: Notify Slack
+      if: failure()
+      uses: slackapi/slack-github-action@v1
+      with:
+        payload: |
+          {
+            "text": "Staging deployment failed for ${{ github.repository }}",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Deployment Failed*\nRepository: ${{ github.repository }}\nBranch: ${{ github.ref }}\nCommit: ${{ github.sha }}"
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  deploy-production:
+    name: Deploy to Production
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Configure kubectl
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+    
+    - name: Blue-Green Deployment
+      run: |
+        # Deploy to green environment
+        kubectl apply -f infra/kubernetes/api-gateway-blue.yaml -n invoice-summarizer
+        
+        # Wait for green to be ready
+        kubectl rollout status deployment/api-gateway-green -n invoice-summarizer --timeout=10m
+        
+        # Switch traffic to green
+        kubectl patch service api-gateway -n invoice-summarizer \
+          -p '{"spec":{"selector":{"version":"green"}}}'
+        
+        # Wait before deleting blue
+        sleep 60
+        
+        # Scale down blue
+        kubectl scale deployment api-gateway-blue --replicas=0 -n invoice-summarizer
+    
+    - name: Verify deployment
+      run: |
+        for i in {1..10}; do
+          if curl -f https://api.invoicesummarizer.com/health; then
+            echo "Health check passed"
+            exit 0
+          fi
+          echo "Attempt $i failed, retrying..."
+          sleep 10
+        done
+        exit 1
+    
+    - name: Database migrations
+      run: |
+        kubectl run db-migrate \
+          --image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api-gateway:sha-${{ github.sha }} \
+          --restart=Never \
+          --rm \
+          -- alembic upgrade head
+    
+    - name: Send deployment notification
+      uses: slackapi/slack-github-action@v1
+      if: always()
+      with:
+        payload: |
+          {
+            "text": "${{ job.status == 'success' && '✅' || '❌' }} Production deployment",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*${{ job.status == 'success' && 'Deployment Successful' || 'Deployment Failed' }}*\nRepository: ${{ github.repository }}\nVersion: ${{ github.sha }}\nAuthor: ${{ github.actor }}"
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}

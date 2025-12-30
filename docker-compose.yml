@@ -1,0 +1,253 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: invoice-postgres
+    environment:
+      POSTGRES_DB: invoices
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - invoice-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: invoice-redis
+    command: redis-server --appendonly yes --requirepass redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - invoice-network
+
+  # RabbitMQ Message Queue
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: invoice-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - invoice-network
+
+  # Jaeger for Distributed Tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: invoice-jaeger
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
+    ports:
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "9411:9411"
+    networks:
+      - invoice-network
+
+  # Prometheus for Metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: invoice-prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    networks:
+      - invoice-network
+
+  # Grafana for Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: invoice-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./infra/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+
+  # Ollama for Local AI
+  ollama:
+    image: ollama/ollama:latest
+    container_name: invoice-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: 5m
+    pull_policy: always
+    networks:
+      - invoice-network
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./backend/api-gateway
+      dockerfile: Dockerfile
+    container_name: invoice-api-gateway
+    environment:
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/invoices
+      REDIS_URL: redis://:redis@redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      JWT_SECRET_KEY: development-secret-key-min-32-chars-long
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    volumes:
+      - ./backend/api-gateway:/app
+      - ./backend/shared:/app/shared
+    networks:
+      - invoice-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # OCR Service
+  ocr-service:
+    build:
+      context: ./backend/ocr-service
+      dockerfile: Dockerfile
+    container_name: invoice-ocr-service
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/invoices
+      REDIS_URL: redis://:redis@redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./backend/ocr-service:/app
+      - ./backend/shared:/app/shared
+    networks:
+      - invoice-network
+
+  # Extraction Service
+  extraction-service:
+    build:
+      context: ./backend/extraction-service
+      dockerfile: Dockerfile
+    container_name: invoice-extraction-service
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/invoices
+      REDIS_URL: redis://:redis@redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./backend/extraction-service:/app
+      - ./backend/shared:/app/shared
+    networks:
+      - invoice-network
+
+  # Summarization Service
+  summarization-service:
+    build:
+      context: ./backend/summarization-service
+      dockerfile: Dockerfile
+    container_name: invoice-summarization-service
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/invoices
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: mistral
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./backend/summarization-service:/app
+      - ./backend/shared:/app/shared
+    networks:
+      - invoice-network
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: invoice-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+    networks:
+      - invoice-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  prometheus-data:
+  grafana-data:
+  ollama-data:
+
+networks:
+  invoice-network:
+    driver: bridge

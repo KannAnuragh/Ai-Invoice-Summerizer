@@ -1,0 +1,182 @@
+================================================================================
+AI INVOICE SUMMARIZER - HOW TO RUN
+================================================================================
+
+PREREQUISITES
+-------------
+Ensure these services are running before starting the application:
+
+1. PostgreSQL (port 5432)
+   - Database: invoices
+   - Username: postgres
+   - Password: 1234
+
+2. Redis (Docker container)
+   - Port: 6379
+   - Password: redis
+
+3. Ollama AI Service (port 11434)
+   - Model: qwen2.5:0.5b
+
+
+================================================================================
+QUICK START
+================================================================================
+
+STEP 1: Start Redis (if not running)
+-------------------------------------
+Open PowerShell and run:
+
+    cd "c:\project\ai invoice summerizer"
+    docker-compose up -d redis
+
+Verify Redis is running:
+
+    docker ps | Select-String redis
+
+
+STEP 2: Verify PostgreSQL Database
+-----------------------------------
+Check if database exists:
+
+    psql -U postgres -h localhost -c "\l invoices"
+
+If database doesn't exist, create it:
+
+    createdb -U postgres -h localhost invoices
+
+
+STEP 3: Start Backend API
+--------------------------
+Open a NEW PowerShell terminal and run:
+
+    cd "c:\project\ai invoice summerizer\backend"
+    python -m uvicorn api-gateway.main:app --reload --host 127.0.0.1 --port 8000
+
+Expected output:
+    ✓ Database initialized successfully
+    ✓ Application startup complete
+    ✓ Uvicorn running on http://127.0.0.1:8000
+
+Keep this terminal open!
+
+
+STEP 4: Start Frontend
+-----------------------
+Open a NEW PowerShell terminal and run:
+
+    cd "c:\project\ai invoice summerizer\frontend"
+    npm run dev
+
+Expected output:
+    ✓ VITE ready in XXX ms
+    ✓ Local: http://localhost:3000
+
+Keep this terminal open!
+
+
+STEP 5: Access Application
+---------------------------
+Open your web browser and go to:
+
+    http://localhost:3000
+
+Backend API Documentation:
+
+    http://localhost:8000/docs
+
+
+================================================================================
+VERIFY ALL SERVICES
+================================================================================
+
+Check if all services are running:
+
+1. Backend Health Check:
+   
+   Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" -UseBasicParsing
+
+2. Frontend:
+   
+   Open browser: http://localhost:3000
+
+3. PostgreSQL:
+   
+   psql -U postgres -h localhost -d invoices -c "SELECT COUNT(*) FROM invoices;"
+
+4. Redis:
+   
+   docker exec invoice-redis redis-cli -a redis PING
+
+5. Ollama:
+   
+   curl http://localhost:11434/api/tags
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: Backend won't start - Port 8000 already in use
+Solution:
+    Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess | Stop-Process -Force
+
+Problem: Redis authentication failed
+Solution:
+    docker-compose restart redis
+    docker exec invoice-redis redis-cli -a redis PING
+
+Problem: Database connection failed
+Solution:
+    - Check PostgreSQL is running: pg_isready -h localhost
+    - Verify password in backend\.env matches your PostgreSQL password
+
+Problem: Frontend can't connect to backend
+Solution:
+    - Check backend is running: curl http://127.0.0.1:8000/health
+    - Verify VITE_API_URL in frontend\.env is set to http://localhost:8000
+
+
+================================================================================
+STOPPING THE APPLICATION
+================================================================================
+
+1. Stop Frontend: Press Ctrl+C in the frontend terminal
+
+2. Stop Backend: Press Ctrl+C in the backend terminal
+
+3. Stop Redis (optional):
+   
+   docker-compose stop redis
+
+
+================================================================================
+ENVIRONMENT CONFIGURATION
+================================================================================
+
+Backend Configuration:
+    File: backend\.env
+    - DATABASE_URL=postgresql+asyncpg://postgres:1234@localhost:5432/invoices
+    - REDIS_URL=redis://:redis@localhost:6379/0
+    - OLLAMA_URL=http://localhost:11434
+    - OLLAMA_MODEL=qwen2.5:0.5b
+
+Frontend Configuration:
+    File: frontend\.env
+    - VITE_API_URL=http://localhost:8000
+
+
+================================================================================
+IMPORTANT NOTES
+================================================================================
+
+• Always start services in this order: Redis → PostgreSQL → Backend → Frontend
+• Keep all terminal windows open while using the application
+• Backend uses auto-reload - code changes will automatically restart the server
+• Frontend uses hot-reload - UI changes will update without page refresh
+• Default ports: Backend=8000, Frontend=3000, PostgreSQL=5432, Redis=6379
+
+
+================================================================================
+For more information, see README.md or GETTING_STARTED.md
+================================================================================
