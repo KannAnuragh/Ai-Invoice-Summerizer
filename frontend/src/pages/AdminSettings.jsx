@@ -53,7 +53,7 @@ export default function AdminSettings() {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 'var(--space-6)' }}>
+      <div className="grid" style={{ gridTemplateColumns: '250px 1fr', gap: 'var(--space-6)' }}>
         {/* Settings Navigation */}
         <div className="card" style={{ height: 'fit-content' }}>
           <nav>

@@ -60,6 +60,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+def get_async_session():
+    """Get a context manager for database session outside FastAPI."""
+    return async_session_maker()
+
+
 async def init_db() -> None:
     """Initialize database tables."""
     from .db_models import Base as DBBase

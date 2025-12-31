@@ -177,6 +177,8 @@ IMPORTANT NOTES
 • Default ports: Backend=8000, Frontend=3000, PostgreSQL=5432, Redis=6379
 
 
-================================================================================
-For more information, see README.md or GETTING_STARTED.md
-================================================================================
+
+
+
+
+python -m uvicorn api-gateway.main:app --reload --host 127.0.0.1 --port 8000

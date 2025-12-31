@@ -75,6 +75,68 @@ class InvoiceEventHandler:
             correlation_id=message.correlation_id
         )
         
+        # Update invoice with extracted data
+        try:
+            import sys
+            import os
+            from datetime import datetime
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from shared.database import get_async_session
+            from shared.db_models import Invoice as DBInvoice, InvoiceStatus
+            from sqlalchemy import select
+            
+            async with get_async_session() as db:
+                # Fetch the invoice
+                query = select(DBInvoice).where(DBInvoice.id == invoice_id)
+                result = await db.execute(query)
+                db_invoice = result.scalar_one_or_none()
+                
+                if db_invoice:
+                    # Update invoice with extracted data
+                    db_invoice.status = InvoiceStatus.EXTRACTED
+                    db_invoice.vendor_name = extracted_data.get("vendor_name")
+                    db_invoice.vendor_address = extracted_data.get("vendor_address")
+                    db_invoice.invoice_number = extracted_data.get("invoice_number") or db_invoice.invoice_number
+                    
+                    # Parse dates
+                    if extracted_data.get("invoice_date"):
+                        try:
+                            db_invoice.invoice_date = datetime.fromisoformat(extracted_data["invoice_date"])
+                        except:
+                            pass
+                    
+                    if extracted_data.get("due_date"):
+                        try:
+                            db_invoice.due_date = datetime.fromisoformat(extracted_data["due_date"])
+                        except:
+                            pass
+                    
+                    db_invoice.subtotal = extracted_data.get("subtotal")
+                    db_invoice.tax_amount = extracted_data.get("tax_amount")
+                    db_invoice.total_amount = extracted_data.get("total_amount")
+                    db_invoice.currency = extracted_data.get("currency", "USD")
+                    db_invoice.po_number = extracted_data.get("po_number")
+                    db_invoice.payment_terms = extracted_data.get("payment_terms")
+                    db_invoice.line_items = extracted_data.get("line_items", [])
+                    
+                    await db.commit()
+                    
+                    self.logger.info(
+                        "Invoice updated with extracted data",
+                        invoice_id=invoice_id,
+                        vendor=extracted_data.get("vendor_name"),
+                        total=extracted_data.get("total_amount")
+                    )
+                else:
+                    self.logger.warning("Invoice not found for update", invoice_id=invoice_id)
+                    
+        except Exception as e:
+            self.logger.error(
+                "Failed to update invoice with extracted data",
+                invoice_id=invoice_id,
+                error=str(e)
+            )
+        
         # Trigger approval workflow
         try:
             import sys

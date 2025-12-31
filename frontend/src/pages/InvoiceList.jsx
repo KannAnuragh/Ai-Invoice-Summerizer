@@ -72,25 +72,25 @@ export default function InvoiceList() {
 
   return (
     <div>
-      <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-6)' }}>
+      <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-6)', gap: 'var(--space-3)' }}>
         <div>
           <h1 style={{ marginBottom: 'var(--space-2)' }}>Invoices</h1>
           <p style={{ color: 'var(--color-text-secondary)' }}>
             {isLoading ? 'Loading...' : `${total} invoice${total !== 1 ? 's' : ''} total`}
           </p>
         </div>
-        <form onSubmit={handleSearch} className="flex gap-2">
+        <form onSubmit={handleSearch} className="flex gap-2" style={{ flexWrap: 'wrap' }}>
           <input 
             type="text" 
             className="input" 
             placeholder="Search invoices..." 
-            style={{ width: 280 }}
+            style={{ minWidth: 200, flex: 1 }}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <select 
             className="input" 
-            style={{ width: 150 }}
+            style={{ minWidth: 120 }}
             value={statusFilter}
             onChange={(e) => {
               setStatusFilter(e.target.value);
@@ -121,7 +121,7 @@ export default function InvoiceList() {
         </div>
       )}
 
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="card" style={{ padding: 0, overflow: 'hidden', overflowX: 'auto' }}>
         {isLoading ? (
           <div style={{ padding: 'var(--space-4)' }}>
             {[1, 2, 3, 4, 5].map(i => (

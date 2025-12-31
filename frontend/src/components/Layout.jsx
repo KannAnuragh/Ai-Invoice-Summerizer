@@ -7,7 +7,9 @@ import {
   CheckSquare, 
   Settings, 
   Upload,
-  LogOut 
+  LogOut,
+  Menu,
+  X as CloseIcon
 } from './icons';
 
 const navigation = [
@@ -58,10 +60,11 @@ function UploadModal({ isOpen, onClose }) {
       alignItems: 'center',
       justifyContent: 'center',
       zIndex: 1000,
+      padding: 'var(--space-4)'
     }} onClick={onClose}>
       <div 
         className="card" 
-        style={{ width: 500, padding: 'var(--space-6)' }}
+        style={{ width: '100%', maxWidth: 500, padding: 'var(--space-6)' }}
         onClick={e => e.stopPropagation()}
       >
         <h2 style={{ marginBottom: 'var(--space-4)' }}>Upload Invoice</h2>
@@ -125,12 +128,27 @@ function UploadModal({ isOpen, onClose }) {
 
 export default function Layout() {
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { data: healthData } = useHealthCheck();
   const isConnected = !!healthData;
 
   return (
     <div className="layout">
-      <aside className="sidebar">
+      {/* Mobile Navigation Toggle */}
+      <button 
+        className="mobile-nav-toggle"
+        onClick={() => setMobileNavOpen(!mobileNavOpen)}
+        aria-label="Toggle navigation"
+      >
+        {mobileNavOpen ? <CloseIcon size={20} /> : <Menu size={20} />}
+      </button>
+      
+      {/* Mobile Backdrop */}
+      <div 
+        className={`mobile-backdrop ${mobileNavOpen ? 'show' : ''}`}
+        onClick={() => setMobileNavOpen(false)}
+      />
+      <aside className={`sidebar ${mobileNavOpen ? 'mobile-open' : ''}`}>
         {/* Logo */}
         <div style={{ padding: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
           <h1 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>
@@ -167,6 +185,7 @@ export default function Layout() {
               className={({ isActive }) => 
                 `nav-item ${isActive ? 'active' : ''}`
               }
+              onClick={() => setMobileNavOpen(false)}
             >
               <item.icon size={18} />
               {item.name}

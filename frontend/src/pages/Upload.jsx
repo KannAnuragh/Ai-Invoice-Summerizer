@@ -9,6 +9,7 @@ const UploadPage = () => {
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
+  const [uploadedInvoices, setUploadedInvoices] = useState([]);
 
   const onDrop = useCallback((acceptedFiles) => {
     const newFiles = acceptedFiles.map(file => ({
@@ -17,6 +18,8 @@ const UploadPage = () => {
       status: 'pending', // pending, uploading, success, error
       progress: 0,
       error: null,
+      invoiceId: null,
+      invoiceData: null,
     }));
     
     setFiles(prev => [...prev, ...newFiles]);
@@ -35,6 +38,44 @@ const UploadPage = () => {
     setFiles(prev => prev.filter(f => f.id !== id));
   };
 
+  // Poll for invoice status after upload
+  const pollInvoiceStatus = async (invoiceId, fileId) => {
+    let attempts = 0;
+    const maxAttempts = 30; // 30 seconds max
+    
+    const poll = async () => {
+      try {
+        const response = await invoicesApi.get(invoiceId);
+        const invoice = response.data;
+        
+        // Update file item with invoice data
+        setFiles(prev => prev.map(f => 
+          f.id === fileId ? {
+            ...f,
+            invoiceData: invoice,
+            status: invoice.status === 'extracted' ? 'extracted' : 'processing'
+          } : f
+        ));
+        
+        // If extraction is complete, stop polling
+        if (invoice.status === 'extracted' || invoice.status === 'validated') {
+          setUploadedInvoices(prev => [...prev, invoice]);
+          return;
+        }
+        
+        // Continue polling if still processing
+        if (attempts < maxAttempts && (invoice.status === 'uploaded' || invoice.status === 'processing')) {
+          attempts++;
+          setTimeout(poll, 1000);
+        }
+      } catch (error) {
+        console.error('Error polling invoice status:', error);
+      }
+    };
+    
+    poll();
+  };
+
   const uploadFiles = async () => {
     if (files.length === 0) {
       toast.error('Please select files to upload');
@@ -45,7 +86,7 @@ const UploadPage = () => {
 
     // Upload files one by one
     for (const fileItem of files) {
-      if (fileItem.status === 'success') continue;
+      if (fileItem.status === 'success' || fileItem.status === 'extracted') continue;
 
       try {
         setFiles(prev => prev.map(f => 
@@ -55,18 +96,29 @@ const UploadPage = () => {
         const formData = new FormData();
         formData.append('file', fileItem.file);
 
-        await invoiceAPI.upload(formData, (progressEvent) => {
+        const response = await invoiceAPI.upload(formData, (progressEvent) => {
           const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
           setFiles(prev => prev.map(f => 
             f.id === fileItem.id ? { ...f, progress } : f
           ));
         });
 
+        const { invoice_id } = response.data;
+
         setFiles(prev => prev.map(f => 
-          f.id === fileItem.id ? { ...f, status: 'success', progress: 100 } : f
+          f.id === fileItem.id ? { 
+            ...f, 
+            status: 'processing', 
+            progress: 100,
+            invoiceId: invoice_id
+          } : f
         ));
         
-        toast.success(`${fileItem.file.name} uploaded successfully`);
+        toast.success(`${fileItem.file.name} uploaded - AI processing started`);
+        
+        // Start polling for invoice status
+        pollInvoiceStatus(invoice_id, fileItem.id);
+        
       } catch (error) {
         const errorMsg = error.response?.data?.detail || 'Upload failed';
         setFiles(prev => prev.map(f => 
@@ -85,8 +137,8 @@ const UploadPage = () => {
   };
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="max-w-6xl mx-auto">
+    <div className="page">
+      <div className="container" style={{ maxWidth: 1200 }}>
         {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -213,6 +265,12 @@ const UploadPage = () => {
                       {fileItem.status === 'success' && (
                         <CheckCircle className="w-6 h-6 text-success" />
                       )}
+                      {fileItem.status === 'extracted' && (
+                        <CheckCircle className="w-6 h-6 text-success" />
+                      )}
+                      {fileItem.status === 'processing' && (
+                        <Loader className="w-6 h-6 text-warning animate-spin" />
+                      )}
                       {fileItem.status === 'error' && (
                         <AlertCircle className="w-6 h-6 text-error" />
                       )}
@@ -233,18 +291,116 @@ const UploadPage = () => {
               </AnimatePresence>
             </div>
 
+            {/* Extracted Invoice Data Section */}
+            {files.some(f => f.invoiceData) && (
+              <div className="mt-6 space-y-4">
+                <h3 className="text-lg font-semibold text-text-primary mb-3">
+                  Extracted Invoice Data
+                </h3>
+                {files.filter(f => f.invoiceData).map((fileItem) => (
+                  <motion.div
+                    key={`data-${fileItem.id}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="glass p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-medium text-text-primary">
+                        {fileItem.file.name}
+                      </h4>
+                      {fileItem.status === 'processing' && (
+                        <span className="text-xs text-warning flex items-center gap-1">
+                          <Loader className="w-3 h-3 animate-spin" />
+                          Processing...
+                        </span>
+                      )}
+                      {fileItem.status === 'extracted' && (
+                        <span className="text-xs text-success flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3" />
+                          Extracted
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <span className="text-text-muted">Vendor:</span>
+                        <span className="ml-2 text-text-primary font-medium">
+                          {fileItem.invoiceData.vendor?.name || 'Processing...'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-text-muted">Invoice #:</span>
+                        <span className="ml-2 text-text-primary font-medium">
+                          {fileItem.invoiceData.invoice_number || 'Processing...'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-text-muted">Total:</span>
+                        <span className="ml-2 text-success font-semibold">
+                          {fileItem.invoiceData.total_amount 
+                            ? `$${fileItem.invoiceData.total_amount.toFixed(2)}`
+                            : 'Processing...'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-text-muted">Date:</span>
+                        <span className="ml-2 text-text-primary font-medium">
+                          {fileItem.invoiceData.invoice_date 
+                            ? new Date(fileItem.invoiceData.invoice_date).toLocaleDateString()
+                            : 'Processing...'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-text-muted">Status:</span>
+                        <span className={`ml-2 font-medium capitalize ${
+                          fileItem.invoiceData.status === 'extracted' ? 'text-success' : 'text-warning'
+                        }`}>
+                          {fileItem.invoiceData.status}
+                        </span>
+                      </div>
+                      {fileItem.invoiceData.po_number && (
+                        <div>
+                          <span className="text-text-muted">PO #:</span>
+                          <span className="ml-2 text-text-primary font-medium">
+                            {fileItem.invoiceData.po_number}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {fileItem.invoiceId && (
+                      <div className="pt-2 border-t border-glass-border">
+                        <a 
+                          href={`/invoices/${fileItem.invoiceId}`}
+                          className="text-sm text-primary hover:underline"
+                        >
+                          View Full Invoice Details →
+                        </a>
+                      </div>
+                    )}
+                  </motion.div>
+                ))}
+              </div>
+            )}
+
             {/* Upload Button */}
             <motion.button
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               onClick={uploadFiles}
-              disabled={uploading || files.every(f => f.status === 'success')}
+              disabled={uploading || files.every(f => f.status === 'success' || f.status === 'processing' || f.status === 'extracted')}
               className="glass-button-primary w-full py-3 mt-6 font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {uploading ? (
                 <>
                   <div className="spinner border-2 w-5 h-5" />
                   Uploading...
+                </>
+              ) : files.some(f => f.status === 'processing') ? (
+                <>
+                  <Loader className="w-5 h-5 animate-spin" />
+                  Processing {files.filter(f => f.status === 'processing').length} invoices...
                 </>
               ) : (
                 <>

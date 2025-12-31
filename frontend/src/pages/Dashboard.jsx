@@ -91,10 +91,11 @@ function UploadModal({ isOpen, onClose }) {
       alignItems: 'center',
       justifyContent: 'center',
       zIndex: 1000,
+      padding: 'var(--space-4)'
     }} onClick={onClose}>
       <div 
         className="card" 
-        style={{ width: 500, padding: 'var(--space-6)' }}
+        style={{ width: '100%', maxWidth: 500, padding: 'var(--space-6)' }}
         onClick={e => e.stopPropagation()}
       >
         <h2 style={{ marginBottom: 'var(--space-4)' }}>Upload Invoice</h2>
@@ -181,7 +182,7 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-6)' }}>
+      <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-6)', gap: 'var(--space-3)' }}>
         <div>
           <h1 style={{ marginBottom: 'var(--space-2)' }}>Dashboard</h1>
           <p style={{ color: 'var(--color-text-secondary)' }}>
@@ -253,6 +254,7 @@ export default function Dashboard() {
                 <th>Vendor</th>
                 <th>Amount</th>
                 <th>Status</th>
+                <th style={{ width: '30%' }}>AI Summary</th>
                 <th>Date</th>
               </tr>
             </thead>
@@ -279,6 +281,16 @@ export default function Dashboard() {
                     >
                       {invoice.status}
                     </span>
+                  </td>
+                  <td style={{ 
+                    fontSize: 'var(--font-size-sm)', 
+                    color: 'var(--color-text-secondary)',
+                    maxWidth: 300,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {invoice.summary || (invoice.status === 'processing' ? 'Processing...' : invoice.status === 'uploaded' ? 'Awaiting scan...' : '-')}
                   </td>
                   <td style={{ color: 'var(--color-text-secondary)' }}>
                     {invoice.created_at ? new Date(invoice.created_at).toLocaleDateString() : '-'}

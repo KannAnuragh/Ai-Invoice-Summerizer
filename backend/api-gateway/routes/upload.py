@@ -163,7 +163,35 @@ async def upload_invoice(
         vendor_id=vendor_id,
     )
     
-    # Publish invoice uploaded event to message queue
+    # Trigger invoice processing in background
+    async def process_invoice_task():
+        """Background task to process invoice"""
+        try:
+            # Import processor
+            import sys
+            import os
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'services'))
+            from invoice_processor import get_invoice_processor
+            
+            processor = get_invoice_processor()
+            
+            # Process the invoice
+            await processor.process_invoice(
+                document_id=document_id,
+                invoice_id=invoice["id"],
+                file_path=storage_path,
+                filename=file.filename or "unknown",
+                correlation_id=document_id
+            )
+            logger.info("Invoice processing completed", invoice_id=invoice["id"])
+        except Exception as e:
+            logger.error("Invoice processing failed", invoice_id=invoice["id"], error=str(e))
+    
+    # Schedule the background task
+    background_tasks.add_task(process_invoice_task)
+    logger.info("Invoice processing scheduled", invoice_id=invoice["id"])
+    
+    # Also publish to message queue (if available)
     try:
         from shared.message_queue import get_message_queue, Message, EventType, MessagePriority
         

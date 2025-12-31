@@ -44,12 +44,7 @@ export default function ApprovalQueue() {
       </div>
 
       {/* Stats */}
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(3, 1fr)', 
-        gap: 'var(--space-4)',
-        marginBottom: 'var(--space-6)'
-      }}>
+      <div className="grid grid-cols-3" style={{ marginBottom: 'var(--space-6)' }}>
         <div className="card" style={{ textAlign: 'center' }}>
           {statsLoading ? (
             <div className="skeleton" style={{ height: 48, margin: '0 auto', width: 60 }} />
@@ -129,7 +124,7 @@ export default function ApprovalQueue() {
                   borderLeft: `4px solid ${slaColors[slaStatus] || slaColors.on_track}`,
                 }}
               >
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between" style={{ gap: 'var(--space-3)', flexWrap: 'wrap' }}>
                   <div>
                     <div className="flex items-center gap-2" style={{ marginBottom: 'var(--space-2)' }}>
                       <Link 

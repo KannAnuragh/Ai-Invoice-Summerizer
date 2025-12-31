@@ -124,14 +124,14 @@ class OllamaSummarizer:
                 role="ai",
                 confidence=0.85,
                 tokens_used=len(summary.split()),
-                    except httpx.ConnectError:
-                        logger.warning(
-                            "Ollama not available, using fallback",
-                            url=self.ollama_url,
-                        )
-                        return self._fallback_summary(invoice_data)
-            
             )
+            
+        except httpx.ConnectError:
+            logger.warning(
+                "Ollama not available, using fallback",
+                url=self.ollama_url,
+            )
+            return self._fallback_summary(invoice_data)
             
         except Exception as e:
             logger.error("Summarization failed", error=str(e), exc_info=True)

@@ -421,3 +421,159 @@ a:hover {
 .mt-4 { margin-top: var(--space-4); }
 .mb-4 { margin-bottom: var(--space-4); }
 .ml-auto { margin-left: auto; }
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .container {
+    padding: 0 var(--space-3);
+  }
+  
+  .main-content {
+    padding: var(--space-4);
+  }
+}
+
+@media (max-width: 768px) {
+  html {
+    font-size: 14px;
+  }
+  
+  .sidebar {
+    position: fixed;
+    left: -100%;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    transition: left var(--transition-base);
+    width: 240px;
+  }
+  
+  .sidebar.mobile-open {
+    left: 0;
+    box-shadow: var(--shadow-lg);
+  }
+  
+  .layout {
+    flex-direction: column;
+  }
+  
+  .main-content {
+    padding: var(--space-3);
+    width: 100%;
+  }
+  
+  .container {
+    padding: 0 var(--space-2);
+  }
+  
+  .card {
+    padding: var(--space-3);
+  }
+  
+  .table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  
+  h1 { font-size: var(--font-size-2xl); }
+  h2 { font-size: var(--font-size-xl); }
+  
+  .flex {
+    flex-wrap: wrap;
+  }
+  
+  .btn {
+    padding: var(--space-2) var(--space-3);\n    font-size: var(--font-size-xs);
+  }
+  
+  /* Settings page responsive - make sidebar stack on mobile */
+  .grid[style*=\"250px\"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .page {
+    padding: var(--space-3) 0;
+  }
+  
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+  
+  .main-content {
+    padding: var(--space-2);
+  }
+}
+
+/* Mobile Navigation Toggle */
+.mobile-nav-toggle {
+  display: none;
+  position: fixed;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 101;
+  width: 40px;
+  height: 40px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.mobile-nav-toggle:hover {
+  background: var(--color-surface-elevated);
+  border-color: var(--color-primary);
+}
+
+@media (max-width: 768px) {
+  .mobile-nav-toggle {
+    display: flex;
+  }
+  
+  .mobile-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+  }
+  
+  .mobile-backdrop.show {
+    display: block;
+  }
+}
+
+/* Responsive Grid */
+.grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.grid-cols-1 { grid-template-columns: repeat(1, 1fr); }
+.grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-cols-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+@media (max-width: 1024px) {
+  .grid-cols-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-cols-3 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .grid-cols-4,
+  .grid-cols-3,
+  .grid-cols-2 {
+    grid-template-columns: 1fr;
+  }
+  
+  .grid {
+    gap: var(--space-3);
+  }
+}

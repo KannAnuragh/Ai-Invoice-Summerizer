@@ -5,13 +5,21 @@ CRUD operations for invoice management.
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from enum import Enum
-import uuid
+import sys
+import os
 
-from fastapi import APIRouter, HTTPException, Query, Path
+from fastapi import APIRouter, HTTPException, Query, Path, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, or_
 import structlog
+
+# Ensure shared package is importable when running directly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from shared.database import get_db
+from shared.db_models import Invoice as DBInvoice, InvoiceStatus as DBInvoiceStatus
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +38,7 @@ class InvoiceStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     PAID = "paid"
+    ARCHIVED = "archived"
 
 
 class LineItem(BaseModel):
@@ -57,34 +66,28 @@ class Invoice(BaseModel):
     
     # Vendor info
     vendor: Optional[Vendor] = None
-    vendor_confidence: Optional[float] = None
     
     # Invoice fields
     invoice_number: Optional[str] = None
-    invoice_number_confidence: Optional[float] = None
     invoice_date: Optional[str] = None
-    date_confidence: Optional[float] = None
     due_date: Optional[str] = None
-    due_date_confidence: Optional[float] = None
     
     # Amounts
     currency: str = "USD"
     subtotal: Optional[float] = None
     tax_amount: Optional[float] = None
     total_amount: Optional[float] = None
-    amount_confidence: Optional[float] = None
     
     # Line items
-    line_items: List[LineItem] = []
+    line_items: List[LineItem] = Field(default_factory=list)
     
     # Other fields
     po_number: Optional[str] = None
     payment_terms: Optional[str] = None
     
-    # Scoring
-    confidence: Optional[float] = None
+    # Risk assessment only (no confidence)
     risk_score: Optional[float] = None
-    anomalies: List[str] = []
+    anomalies: List[str] = Field(default_factory=list)
     
     # Summary
     summary: Optional[str] = None
@@ -104,259 +107,291 @@ class InvoiceListResponse(BaseModel):
     has_more: bool
 
 
-# In-memory storage for demo (replace with database)
-_invoices_db: dict = {}
+class InvoiceUpdateRequest(BaseModel):
+    """Update request body."""
+    data: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
 
 
-def _create_demo_invoices():
-    """Create demo invoices for testing."""
-    if _invoices_db:
-        return
-    
-    demo_invoices = [
-        {
-            "id": "inv-001",
-            "document_id": "doc-001",
-            "status": "pending",
-            "vendor": {"id": "v-001", "name": "Acme Corporation", "address": "123 Business Ave"},
-            "vendor_confidence": 0.95,
-            "invoice_number": "INV-2024-0247",
-            "invoice_number_confidence": 0.98,
-            "invoice_date": "2024-12-22",
-            "date_confidence": 0.92,
-            "due_date": "2025-01-21",
-            "due_date_confidence": 0.88,
-            "currency": "USD",
-            "subtotal": 10500,
-            "tax_amount": 2000,
-            "total_amount": 12500,
-            "amount_confidence": 0.96,
-            "line_items": [
-                {"description": "Software License - Enterprise", "quantity": 1, "unit_price": 8000, "total": 8000},
-                {"description": "Implementation Services", "quantity": 10, "unit_price": 150, "total": 1500},
-                {"description": "Training (per hour)", "quantity": 5, "unit_price": 200, "total": 1000},
-            ],
-            "confidence": 0.92,
-            "risk_score": 0.15,
-            "anomalies": [],
-            "summary": "Invoice from Acme Corporation for software licensing and implementation services. Total amount $12,500 USD with standard NET30 payment terms.",
-            "created_at": "2024-12-22T10:00:00Z",
-            "updated_at": "2024-12-22T10:00:00Z",
-        },
-        {
-            "id": "inv-002",
-            "document_id": "doc-002",
-            "status": "review",
-            "vendor": {"id": "v-002", "name": "CloudServices Ltd"},
-            "vendor_confidence": 0.72,
-            "invoice_number": "INV-2024-0244",
-            "invoice_number_confidence": 0.88,
-            "invoice_date": "2024-12-20",
-            "date_confidence": 0.85,
-            "due_date": "2025-01-19",
-            "due_date_confidence": 0.80,
-            "currency": "USD",
-            "subtotal": 13500,
-            "tax_amount": 1500,
-            "total_amount": 15000,
-            "amount_confidence": 0.90,
-            "line_items": [
-                {"description": "Cloud Hosting (Monthly)", "quantity": 1, "unit_price": 12000, "total": 12000},
-                {"description": "Support Premium", "quantity": 1, "unit_price": 1500, "total": 1500},
-            ],
-            "confidence": 0.72,
-            "risk_score": 0.45,
-            "anomalies": ["Amount 50% higher than historical average"],
-            "summary": "Cloud hosting invoice requires review due to amount deviation from typical billing.",
-            "created_at": "2024-12-20T14:30:00Z",
-            "updated_at": "2024-12-20T14:30:00Z",
-        },
-        {
-            "id": "inv-003",
-            "document_id": "doc-003",
-            "status": "approved",
-            "vendor": {"id": "v-003", "name": "Office Depot"},
-            "vendor_confidence": 0.98,
-            "invoice_number": "INV-2024-0245",
-            "invoice_number_confidence": 0.99,
-            "invoice_date": "2024-12-21",
-            "date_confidence": 0.95,
-            "due_date": "2025-01-20",
-            "due_date_confidence": 0.95,
-            "currency": "USD",
-            "subtotal": 2100,
-            "tax_amount": 240,
-            "total_amount": 2340,
-            "amount_confidence": 0.98,
-            "line_items": [
-                {"description": "Office Supplies", "quantity": 1, "unit_price": 1200, "total": 1200},
-                {"description": "Printer Cartridges", "quantity": 3, "unit_price": 300, "total": 900},
-            ],
-            "confidence": 0.95,
-            "risk_score": 0.08,
-            "anomalies": [],
-            "summary": "Standard office supplies order from verified vendor. Auto-approved based on low risk score.",
-            "created_at": "2024-12-21T09:15:00Z",
-            "updated_at": "2024-12-21T09:15:00Z",
-        },
-    ]
-    
-    for inv in demo_invoices:
-        _invoices_db[inv["id"]] = inv
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_date(value: Any) -> Optional[datetime]:
+    """Parse ISO date strings to datetime when possible."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
 
-# Initialize demo data
-_create_demo_invoices()
+def _decimal_to_float(value: Any) -> Optional[float]:
+    """Safely convert Decimal/None to float."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
+
+def _db_invoice_to_dict(db_invoice: DBInvoice) -> dict:
+    """Convert database invoice to dictionary for response models."""
+    return {
+        "id": db_invoice.id,
+        "document_id": db_invoice.document_id,
+        "status": db_invoice.status.value if hasattr(db_invoice.status, "value") else str(db_invoice.status),
+        "vendor": {
+            "id": db_invoice.vendor_id,
+            "name": db_invoice.vendor_name or "Unknown",
+            "address": db_invoice.vendor_address,
+        } if db_invoice.vendor_id or db_invoice.vendor_name else None,
+        "invoice_number": db_invoice.invoice_number,
+        "invoice_date": db_invoice.invoice_date.isoformat() if db_invoice.invoice_date else None,
+        "due_date": db_invoice.due_date.isoformat() if db_invoice.due_date else None,
+        "currency": db_invoice.currency or "USD",
+        "subtotal": _decimal_to_float(db_invoice.subtotal),
+        "tax_amount": _decimal_to_float(db_invoice.tax_amount),
+        "total_amount": _decimal_to_float(db_invoice.total_amount),
+        "line_items": db_invoice.line_items or [],
+        "po_number": db_invoice.po_number,
+        "payment_terms": db_invoice.payment_terms,
+        "risk_score": _decimal_to_float(db_invoice.risk_score),
+        "anomalies": db_invoice.anomalies or [],
+        "summary": db_invoice.summary,
+        "created_at": db_invoice.created_at.isoformat() if db_invoice.created_at else None,
+        "updated_at": db_invoice.updated_at.isoformat() if db_invoice.updated_at else None,
+        "created_by": db_invoice.created_by,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @router.get("/invoices", response_model=InvoiceListResponse)
 async def list_invoices(
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(20, ge=1, le=100, alias="page_size", description="Items per page"),
+    limit: int = Query(10, ge=1, le=100, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search by invoice number or vendor"),
     vendor_id: Optional[str] = Query(None, description="Filter by vendor"),
+    db: AsyncSession = Depends(get_db),
 ) -> InvoiceListResponse:
-    """
-    List invoices with pagination and filtering.
-    """
-    all_invoices = list(_invoices_db.values())
-    
-    # Apply filters
+    """List invoices with pagination and filtering."""
+    query = select(DBInvoice)
+
     if status:
-        all_invoices = [i for i in all_invoices if i.get("status") == status]
+        query = query.where(DBInvoice.status == status)
     if vendor_id:
-        all_invoices = [i for i in all_invoices if i.get("vendor", {}).get("id") == vendor_id]
+        query = query.where(DBInvoice.vendor_id == vendor_id)
     if search:
-        search_lower = search.lower()
-        all_invoices = [
-            i for i in all_invoices 
-            if search_lower in (i.get("invoice_number") or "").lower()
-            or search_lower in (i.get("vendor", {}).get("name") or "").lower()
-        ]
-    
-    # Sort by created_at desc
-    all_invoices.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    
-    total = len(all_invoices)
-    start = (page - 1) * limit
-    end = start + limit
-    items = all_invoices[start:end]
-    
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                DBInvoice.invoice_number.ilike(pattern),
+                DBInvoice.vendor_name.ilike(pattern),
+            )
+        )
+
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    paged_query = (
+        query.order_by(DBInvoice.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    result = await db.execute(paged_query)
+    db_invoices = result.scalars().all()
+
+    invoices = [Invoice(**_db_invoice_to_dict(inv)) for inv in db_invoices]
+
     return InvoiceListResponse(
-        invoices=[Invoice(**i) for i in items],
+        invoices=invoices,
         total=total,
         page=page,
         page_size=limit,
-        has_more=end < total
+        has_more=page * limit < total,
     )
 
 
 @router.get("/invoices/{invoice_id}", response_model=Invoice)
 async def get_invoice(
-    invoice_id: str = Path(..., description="Invoice ID")
+    invoice_id: str = Path(..., description="Invoice ID"),
+    db: AsyncSession = Depends(get_db),
 ) -> Invoice:
-    """
-    Get a single invoice by ID.
-    """
-    if invoice_id not in _invoices_db:
+    """Get a single invoice by ID."""
+    query = select(DBInvoice).where(DBInvoice.id == invoice_id)
+    result = await db.execute(query)
+    db_invoice = result.scalar_one_or_none()
+
+    if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    return Invoice(**_invoices_db[invoice_id])
+
+    return Invoice(**_db_invoice_to_dict(db_invoice))
 
 
-class InvoiceUpdateRequest(BaseModel):
-    """Update request body."""
-    data: Optional[dict] = None
-    status: Optional[str] = None
-
-
-@router.patch("/invoices/{invoice_id}")
+@router.patch("/invoices/{invoice_id}", response_model=Invoice)
 async def update_invoice(
     invoice_id: str = Path(..., description="Invoice ID"),
     request: InvoiceUpdateRequest = None,
+    db: AsyncSession = Depends(get_db),
 ) -> Invoice:
-    """
-    Update invoice data or status.
-    Used for human corrections and status transitions.
-    """
-    if invoice_id not in _invoices_db:
+    """Update invoice data or status for human corrections."""
+    query = select(DBInvoice).where(DBInvoice.id == invoice_id)
+    result = await db.execute(query)
+    db_invoice = result.scalar_one_or_none()
+
+    if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    invoice = _invoices_db[invoice_id]
-    
+
+    allowed_fields = {
+        "vendor_id",
+        "vendor_name",
+        "vendor_address",
+        "invoice_number",
+        "invoice_date",
+        "due_date",
+        "currency",
+        "subtotal",
+        "tax_amount",
+        "total_amount",
+        "line_items",
+        "po_number",
+        "payment_terms",
+        "risk_score",
+        "anomalies",
+        "summary",
+        "document_id",
+    }
+
+    updated = False
+
     if request and request.data:
-        # Merge field updates
         for key, value in request.data.items():
-            if key in invoice or key in ["vendor_name", "invoice_number", "invoice_date", "due_date", "total_amount"]:
-                invoice[key] = value
-    
+            if key not in allowed_fields:
+                continue
+            if key in {"invoice_date", "due_date"}:
+                parsed_date = _parse_date(value)
+                if parsed_date:
+                    setattr(db_invoice, key, parsed_date)
+                    updated = True
+                continue
+            setattr(db_invoice, key, value)
+            updated = True
+
     if request and request.status:
-        invoice["status"] = request.status
-    
-    invoice["updated_at"] = datetime.utcnow().isoformat()
-    _invoices_db[invoice_id] = invoice
-    
-    logger.info("Invoice updated", invoice_id=invoice_id, status=request.status if request else None)
-    
-    return Invoice(**invoice)
+        try:
+            db_invoice.status = DBInvoiceStatus(request.status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid status value")
+        updated = True
+
+    if updated:
+        db_invoice.updated_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(db_invoice)
+
+    return Invoice(**_db_invoice_to_dict(db_invoice))
 
 
 @router.get("/invoices/{invoice_id}/summary")
 async def get_invoice_summary(
     invoice_id: str = Path(..., description="Invoice ID"),
-    role: str = Query("finance", description="Role-based summary (cfo, finance, procurement, auditor)")
+    role: str = Query("finance", description="User role requesting summary"),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    Get AI-generated summary for an invoice.
-    Summary content varies based on user role.
-    """
-    if invoice_id not in _invoices_db:
+    """Generate a simple role-based summary for an invoice."""
+    query = select(DBInvoice).where(DBInvoice.id == invoice_id)
+    result = await db.execute(query)
+    db_invoice = result.scalar_one_or_none()
+
+    if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    invoice = _invoices_db[invoice_id]
-    
-    # Role-based summary templates
-    summaries = {
-        "cfo": f"**Executive Summary**: Invoice {invoice.get('invoice_number', 'N/A')} from {invoice.get('vendor', {}).get('name', 'Unknown')} for ${invoice.get('total_amount', 0):,.2f}. Risk level: {'Low' if invoice.get('risk_score', 0) < 0.3 else 'Medium' if invoice.get('risk_score', 0) < 0.6 else 'High'}. Recommended action: Review and approve.",
-        "finance": f"""**Finance Analysis**:
-- Vendor: {invoice.get('vendor', {}).get('name', 'Unknown')}
-- Invoice #: {invoice.get('invoice_number', 'N/A')}
-- Amount: ${invoice.get('total_amount', 0):,.2f} ({invoice.get('currency', 'USD')})
-- Tax: ${invoice.get('tax_amount', 0):,.2f}
-- Due Date: {invoice.get('due_date', 'N/A')}
-- Confidence: {(invoice.get('confidence', 0) * 100):.0f}%
-""",
-        "procurement": f"**Procurement Review**: Invoice from {invoice.get('vendor', {}).get('name', 'Unknown')} for {len(invoice.get('line_items', []))} line items totaling ${invoice.get('total_amount', 0):,.2f}. Verify pricing against contracted rates.",
-        "auditor": f"**Audit Notes**: Invoice {invoice.get('invoice_number', 'N/A')} processed with {(invoice.get('confidence', 0) * 100):.0f}% extraction confidence. Risk score: {(invoice.get('risk_score', 0) * 100):.0f}%. Anomalies detected: {len(invoice.get('anomalies', []))}.",
+
+    vendor_name = db_invoice.vendor_name or "Unknown vendor"
+    amount = _decimal_to_float(db_invoice.total_amount) or 0.0
+    currency = db_invoice.currency or "USD"
+    invoice_number = db_invoice.invoice_number or "N/A"
+    due_date = db_invoice.due_date.isoformat() if db_invoice.due_date else "N/A"
+    risk_score = _decimal_to_float(db_invoice.risk_score)
+
+    base_summary = (
+        f"Invoice {invoice_number} from {vendor_name} for {currency} {amount:,.2f}. "
+        f"Due: {due_date}."
+    )
+
+    role_summaries = {
+        "finance": (
+            f"Finance: {base_summary} "
+            f"Tax: {_decimal_to_float(db_invoice.tax_amount) or 0.0:,.2f}."
+        ),
+        "procurement": (
+            f"Procurement: {base_summary} "
+            f"Line items: {len(db_invoice.line_items or [])}."
+        ),
+        "auditor": (
+            f"Audit: {base_summary} "
+            f"Risk score: {risk_score:.2f}" if risk_score is not None else base_summary
+        ),
     }
-    
+
     return {
         "invoice_id": invoice_id,
         "role": role,
-        "summary": summaries.get(role, invoice.get("summary", "Summary pending processing...")),
-        "generated_at": datetime.utcnow().isoformat()
+        "summary": role_summaries.get(role, base_summary),
+        "generated_at": datetime.utcnow().isoformat(),
     }
 
 
 @router.get("/invoices/{invoice_id}/audit-trail")
 async def get_audit_trail(
-    invoice_id: str = Path(..., description="Invoice ID")
+    invoice_id: str = Path(..., description="Invoice ID"),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    Get complete audit trail for an invoice.
-    Shows all actions taken on the invoice.
-    """
-    if invoice_id not in _invoices_db:
+    """Return basic audit trail derived from invoice timestamps."""
+    query = select(DBInvoice).where(DBInvoice.id == invoice_id)
+    result = await db.execute(query)
+    db_invoice = result.scalar_one_or_none()
+
+    if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    invoice = _invoices_db[invoice_id]
-    
+
+    events = [
+        {
+            "action": "uploaded",
+            "timestamp": db_invoice.created_at.isoformat() if db_invoice.created_at else None,
+            "user": db_invoice.created_by or "system",
+            "details": "Invoice uploaded",
+        }
+    ]
+
+    if db_invoice.updated_at and db_invoice.updated_at != db_invoice.created_at:
+        events.append(
+            {
+                "action": "updated",
+                "timestamp": db_invoice.updated_at.isoformat(),
+                "user": db_invoice.updated_by or db_invoice.created_by or "system",
+                "details": "Invoice updated",
+            }
+        )
+
+    events.append(
+        {
+            "action": "status",
+            "timestamp": db_invoice.updated_at.isoformat() if db_invoice.updated_at else None,
+            "user": db_invoice.updated_by or db_invoice.created_by or "system",
+            "details": f"Status: {db_invoice.status}",
+        }
+    )
+
     return {
         "invoice_id": invoice_id,
-        "events": [
-            {"action": "uploaded", "timestamp": invoice.get("created_at"), "user": "system", "details": "Invoice uploaded"},
-            {"action": "processed", "timestamp": invoice.get("created_at"), "user": "system", "details": "OCR and extraction completed"},
-            {"action": "validated", "timestamp": invoice.get("updated_at"), "user": "system", "details": f"Risk score: {invoice.get('risk_score', 0):.2f}"},
-        ]
+        "events": events,
     }
